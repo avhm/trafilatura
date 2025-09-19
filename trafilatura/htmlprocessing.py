@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 from courlan.urlutils import fix_relative_urls, get_base_url
 from lxml.etree import _Element, Element, SubElement, XPath, strip_tags, tostring
 from lxml.html import HtmlElement
+import json
 
 from .deduplication import duplicate_test
 from .settings import (
@@ -42,7 +43,7 @@ REND_TAG_MAPPING = {
 
 HTML_TAG_MAPPING = {v: k for k, v in REND_TAG_MAPPING.items()}
 
-PRESERVE_IMG_CLEANING = {"figure", "picture", "source"}
+PRESERVE_IMG_CLEANING = {"figure", "picture", "source", "audio", "video", "track"}
 
 CODE_INDICATORS = ["{", "(\"", "('", "\n    "]
 
@@ -58,9 +59,10 @@ def tree_cleaning(tree: HtmlElement, options: Extractor) -> HtmlElement:
         for elem in tree.xpath(".//figure[descendant::table]"):
             elem.tag = "div"
     if options.images:
-        # Many websites have <img> inside <figure> or <picture> or <source> tag
+        # Many websites have <img> inside <figure>/<picture>/<source>, and media inside <audio>/<video>
         cleaning_list = [e for e in cleaning_list if e not in PRESERVE_IMG_CLEANING]
-        stripping_list.remove("img")
+        if "img" in stripping_list:
+            stripping_list.remove("img")
 
     # strip targeted elements
     strip_tags(tree, stripping_list)
@@ -222,8 +224,10 @@ def handle_textnode(
     preserve_spaces: bool = False,
 ) -> Optional[_Element]:
     "Convert, format, and probe potential text elements."
-    if elem.tag == "graphic" and is_image_element(elem):
-        return elem
+    if elem.tag == "graphic":
+        # pass through if it's a valid image or declared AV media
+        if is_image_element(elem) or elem.get("data-type") in ("video", "audio"):
+            return elem
     if elem.tag == "done" or (len(elem) == 0 and not elem.text and not elem.tail):
         return None
 
@@ -388,6 +392,8 @@ def convert_tags(
     tree: HtmlElement, options: Extractor, url: Optional[str] = None
 ) -> HtmlElement:
     "Simplify markup and convert relevant HTML tags to an XML standard."
+    # base URL detection (used for links and media src)
+    base_url = url and get_base_url(url)
     # delete links for faster processing
     if not options.links:
         xpath_expr = ".//*[self::div or self::li or self::p]//a"
@@ -400,7 +406,6 @@ def convert_tags(
         strip_tags(tree, "a")
     else:
         # get base URL for converting relative URLs
-        base_url = url and get_base_url(url)
         for elem in tree.iter("a", "ref"):
             convert_link(elem, base_url)
 
@@ -415,8 +420,128 @@ def convert_tags(
     # iterate over all concerned elements
     for elem in tree.iter(CONVERSIONS.keys()):
         CONVERSIONS[elem.tag](elem)  # type: ignore[index]
-    # images
+    # images and media
     if options.images:
+        # 1) Normalize <figure> with <img>/<video>/<audio> + optional <figcaption>
+        for fig in list(tree.iter("figure")):
+            # extract caption text if present
+            cap_nodes = fig.xpath('.//figcaption')
+            caption_el = cap_nodes[0] if cap_nodes else None
+            caption = " ".join(caption_el.itertext()).strip() if caption_el is not None else ""
+            if caption_el is not None and caption_el.getparent() is not None:
+                caption_el.getparent().remove(caption_el)
+
+            # prefer <img>, then <picture><img>, then <video>, then <audio>
+            media_nodes = fig.xpath('.//img | .//picture/img | .//video | .//audio')
+            media = media_nodes[0] if media_nodes else None
+            if media is None:
+                continue
+
+            g = Element("graphic")
+            # image
+            if media.tag == "img":
+                g.set("data-type", "image")
+                src = media.get("src")
+                if src and base_url:
+                    src = fix_relative_urls(base_url, src)
+                if src:
+                    g.set("src", src)
+                if media.get("alt"):
+                    g.set("alt", media.get("alt", ""))
+                if media.get("title"):
+                    g.set("title", media.get("title", ""))
+            else:
+                # video or audio
+                g.set("data-type", "video" if media.tag == "video" else "audio")
+                if media.get("src"):
+                    src = media.get("src")
+                    if src and base_url:
+                        src = fix_relative_urls(base_url, src)
+                    if src:
+                        g.set("src", src)
+                # collect <source> children
+                sources = []
+                for s in media.xpath(".//source"):
+                    ssrc = s.get("src")
+                    if ssrc:
+                        if base_url:
+                            ssrc = fix_relative_urls(base_url, ssrc)
+                        sources.append({
+                            "src": ssrc,
+                            "type": s.get("type", ""),
+                            "media": s.get("media", ""),
+                        })
+                if sources:
+                    g.set("data-sources", json.dumps(sources, ensure_ascii=False))
+                # copy common media attributes if present
+                for attr in (
+                    "poster",
+                    "controls",
+                    "autoplay",
+                    "muted",
+                    "loop",
+                    "preload",
+                    "playsinline",
+                    "crossorigin",
+                ):
+                    if media.get(attr) is not None:
+                        g.set(attr, media.get(attr) or "")
+
+            if caption:
+                g.set("caption", caption)
+            # replace figure element in place with <graphic>
+            fig.tag = "graphic"
+            fig.attrib.clear()
+            # remove all children
+            for child in list(fig):
+                fig.remove(child)
+            for k, v in g.attrib.items():
+                fig.set(k, v)
+
+        # 2) Standalone <video>/<audio>
+        for media in list(tree.xpath(".//video|.//audio")):
+            # replace media in place with <graphic>
+            media_attrs = {"data-type": ("video" if media.tag == "video" else "audio")}
+            if media.get("src"):
+                src = media.get("src")
+                if src and base_url:
+                    src = fix_relative_urls(base_url, src)
+                if src:
+                    media_attrs["src"] = src
+            sources = []
+            for s in media.findall(".//source"):
+                ssrc = s.get("src")
+                if ssrc:
+                    if base_url:
+                        ssrc = fix_relative_urls(base_url, ssrc)
+                    sources.append({
+                        "src": ssrc,
+                        "type": s.get("type", ""),
+                        "media": s.get("media", ""),
+                    })
+            if sources:
+                media_attrs["data-sources"] = json.dumps(sources, ensure_ascii=False)
+            for attr in (
+                "poster",
+                "controls",
+                "autoplay",
+                "muted",
+                "loop",
+                "preload",
+                "playsinline",
+                "crossorigin",
+            ):
+                if media.get(attr) is not None:
+                    media_attrs[attr] = media.get(attr) or ""
+            media.tag = "graphic"
+            media.attrib.clear()
+            # remove potential children
+            for child in list(media):
+                media.remove(child)
+            for k, v in media_attrs.items():
+                media.set(k, v)
+
+        # 3) Remaining <img>
         for elem in tree.iter("img"):
             elem.tag = "graphic"
 
@@ -430,26 +555,131 @@ HTML_CONVERSIONS = {
     "quote": "blockquote",
     "head": lambda elem: f"h{int(elem.get('rend', 'h3')[1:])}",
     "lb": "br",
-    "img": "graphic",
+    # convert internal link back to HTML
     "ref": "a",
     "hi": lambda elem: HTML_TAG_MAPPING[elem.get("rend", "#i")],
 }
 
 
 def convert_to_html(tree: _Element) -> _Element:
-    "Convert XML to simplified HTML."
+    "Convert XML to simplified HTML. Also rebuild media/figures for HTML."
+    # First, rebuild <graphic> elements into HTML media/img nodes
+    for g in list(tree.iter("graphic")):
+        dtype = g.get("data-type") or "image"
+        caption = g.get("caption") or ""
+
+        # helper to optionally wrap in figure
+        def wrap_in_figure(node: _Element) -> _Element:
+            if caption:
+                fig = Element("figure")
+                fig.append(node)
+                SubElement(fig, "figcaption").text = caption
+                return fig
+            return node
+
+        replacement: Optional[_Element] = None
+        if dtype == "image":
+            img = Element("img")
+            if g.get("src"):
+                img.set("src", g.get("src", ""))
+            if g.get("alt"):
+                img.set("alt", g.get("alt", ""))
+            if g.get("title"):
+                img.set("title", g.get("title", ""))
+            replacement = wrap_in_figure(img)
+        else:
+            tagname = "video" if dtype == "video" else "audio"
+            media_el = Element(tagname)
+            # copy relevant attrs
+            for k in (
+                "src",
+                "poster",
+                "controls",
+                "autoplay",
+                "muted",
+                "loop",
+                "preload",
+                "playsinline",
+                "crossorigin",
+            ):
+                if g.get(k) is not None:
+                    media_el.set(k, g.get(k, ""))
+            # add <source> children from data-sources
+            try:
+                sources = json.loads(g.get("data-sources", "[]"))
+            except Exception:
+                sources = []
+            for s in sources:
+                sattrs = {"src": s.get("src", "")}
+                if s.get("type"):
+                    sattrs["type"] = s["type"]
+                if s.get("media"):
+                    sattrs["media"] = s["media"]
+                SubElement(media_el, "source", **sattrs)
+            replacement = wrap_in_figure(media_el)
+
+        # replace in tree
+        parent = g.getparent()
+        if parent is not None and replacement is not None:
+            idx = parent.index(g)
+            # preserve tail text when replacing
+            if g.tail:
+                replacement.tail = g.tail
+                g.tail = None
+            parent.remove(g)
+            parent.insert(idx, replacement)
+
+    # Then, convert remaining internal tags to HTML
     for elem in tree.iter(HTML_CONVERSIONS.keys()):
         conversion = HTML_CONVERSIONS[str(elem.tag)]
-        # apply function or straight conversion
         if callable(conversion):
             elem.tag = conversion(elem)
         else:
             elem.tag = conversion  # type: ignore[assignment]
-        # handle attributes
+        # handle attributes for links
         if elem.tag == "a":
             elem.set("href", elem.attrib.pop("target", ""))
         else:
             elem.attrib.clear()
+
+    # After conversion, split paragraphs that contain block-level <figure>
+    for fig in list(tree.iter("figure")):
+        parent = fig.getparent()
+        if parent is not None and parent.tag == "p":
+            p = parent
+            idx_fig = p.index(fig)
+            # left part
+            p_before = Element("p")
+            p_before.text = p.text
+            for _ in range(idx_fig):
+                child = p[0]
+                p.remove(child)
+                p_before.append(child)
+            # right part
+            p_after = Element("p")
+            # figure tail belongs to the right paragraph
+            if fig.tail:
+                p_after.text = fig.tail
+                fig.tail = None
+            # move remaining children to right paragraph
+            while len(p) > 0:
+                child = p[0]
+                p.remove(child)
+                p_after.append(child)
+
+            # insert p_before, fig, p_after around original p
+            grand = p.getparent()
+            if grand is not None:
+                idx_p = grand.index(p)
+                # remove original p
+                grand.remove(p)
+                # insert in reverse order to preserve positions
+                if len(p_after) > 0 or (p_after.text and p_after.text.strip()):
+                    grand.insert(idx_p, p_after)
+                grand.insert(idx_p, fig)
+                if len(p_before) > 0 or (p_before.text and p_before.text.strip()):
+                    grand.insert(idx_p, p_before)
+
     tree.tag = "body"
     root = Element("html")
     root.append(tree)

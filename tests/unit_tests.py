@@ -1793,6 +1793,95 @@ def test_html_conversion():
     assert result == excepted_html
 
 
+def test_html_figure_image_with_caption_html_output():
+    """Image inside figure with figcaption should be preserved in HTML output."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <img src="a.jpg" alt="Alt">
+        <figcaption>Caption A</figcaption>
+      </figure>
+    </article></body></html>
+    """
+    result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(result)
+    figures = doc.xpath('//figure')
+    assert len(figures) == 1
+    assert figures[0].xpath('.//img[@src="a.jpg"]')
+    assert figures[0].xpath('.//figcaption')[0].text_content().strip() == 'Caption A'
+
+
+def test_html_video_sources_with_caption_html_output():
+    """Video with sources + poster + caption should render as <video> inside <figure>."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <video poster="p.jpg" controls>
+          <source src="v.webm" type="video/webm">
+          <source src="v.mp4" type="video/mp4">
+        </video>
+        <figcaption>Caption V</figcaption>
+      </figure>
+    </article></body></html>
+    """
+    result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(result)
+    figures = doc.xpath('//figure')
+    assert len(figures) == 1
+    video = figures[0].xpath('.//video')
+    assert video, "<video> not found"
+    video = video[0]
+    # poster attribute present
+    assert video.get('poster') == 'p.jpg'
+    # controls attribute present (boolean in HTML)
+    assert 'controls' in video.attrib
+    sources = video.xpath('./source')
+    assert len(sources) == 2
+    assert {s.get('src') for s in sources} == {'v.webm', 'v.mp4'}
+    assert figures[0].xpath('.//figcaption')[0].text_content().strip() == 'Caption V'
+
+
+def test_paragraph_splitting_for_figure():
+    """A <figure> inside a paragraph should result in two <p> blocks around it in HTML output."""
+    html_input = """
+    <html><body><article>
+      <p>Text before <figure><img src="a.jpg"/><figcaption>Cap</figcaption></figure> text after.</p>
+    </article></body></html>
+    """
+    result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(result)
+    # should have two paragraphs and one figure at the same level
+    body_children = doc.xpath('//body/*')
+    # The structure should be p, figure, p
+    tags = [el.tag for el in body_children]
+    assert tags.count('figure') == 1
+    assert tags.count('p') >= 2
+    # Verify text content around figure
+    # Collapse whitespace for comparison
+    texts = [el.text_content().strip() for el in body_children if el.tag in ('p', 'figure')]
+    assert any('Text before' in t for t in texts)
+    assert any('text after.' in t for t in texts)
+
+
+def test_audio_preserved_when_include_images():
+    """Standalone <audio> with sources should be preserved when include_images=True and dropped otherwise."""
+    html_input = """
+    <html><body><article>
+      <p>Intro</p>
+      <audio controls>
+        <source src="a.mp3" type="audio/mpeg">
+      </audio>
+      <p>Outro</p>
+    </article></body></html>
+    """
+    # Without images/media, audio likely dropped
+    result_no_media = extract(html_input, output_format="html", include_images=False, config=ZERO_CONFIG)
+    assert '<audio' not in result_no_media
+    # With images/media, audio preserved
+    result_media = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert '<audio' in result_media
+
+
 def test_deprecations():
     "Test deprecated function parameters."
     htmlstring = "<html><body><article>ABC</article></body></html>"
