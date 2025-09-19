@@ -1890,6 +1890,7 @@ def test_html_figcaption_with_noise():
         <img src="a.jpg" alt="Alt"/>
         <figcaption>
           <style>.css-1st60ou{font-family:sans-serif;} .e15o9k8g0+.css-1st60ou{margin-left:0.25rem;}</style>
+          <script>BAD()</script>
           <span>Photograph: Reuters</span>
         </figcaption>
       </figure>
@@ -1898,7 +1899,10 @@ def test_html_figcaption_with_noise():
     res = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
     doc = html.fromstring(res)
     cap = doc.xpath('//figure/figcaption')[0].text_content().strip()
+    # Caption must only contain visible text; no style/script contents
     assert 'Photograph: Reuters' == ' '.join(cap.split())
+    assert 'css-1st60ou' not in cap and 'margin-left:0.25rem' not in cap and 'BAD(' not in cap
+    assert 'css-1st60ou' not in res and 'margin-left:0.25rem' not in res and 'BAD(' not in res
 
 
 def test_audio_not_self_closed_does_not_swallow_content():
@@ -2006,3 +2010,11 @@ if __name__ == '__main__':
     test_lang_detection()
     test_is_probably_readerable()
     test_html_conversion()
+    # Media and figure/figcaption tests
+    test_html_figure_image_with_caption_html_output()
+    test_html_video_sources_with_caption_html_output()
+    test_html_figure_caption_sanitization_complex()
+    test_html_figcaption_with_noise()
+    test_audio_not_self_closed_does_not_swallow_content()
+    test_paragraph_splitting_for_figure()
+    test_audio_preserved_when_include_images()
