@@ -1794,25 +1794,33 @@ def test_html_conversion():
 
 
 def test_html_figure_image_with_caption_html_output():
-    """Image inside figure with figcaption should be preserved in HTML output."""
+    """Image figure with nested figcaption content preserves only textual caption and strips garbage."""
     html_input = """
     <html><body><article>
       <figure>
         <img src="a.jpg" alt="Alt">
-        <figcaption>Caption A</figcaption>
+        <figcaption>
+          <span>Caption</span> <strong>A</strong>
+          <style>.x{color:red}</style>
+          <a href="#">Fancy</a>
+        </figcaption>
+        <div class="share"><a>share</a></div>
       </figure>
     </article></body></html>
     """
     result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert 'color:red' not in result and '<style' not in result
     doc = html.fromstring(result)
     figures = doc.xpath('//figure')
     assert len(figures) == 1
     assert figures[0].xpath('.//img[@src="a.jpg"]')
-    assert figures[0].xpath('.//figcaption')[0].text_content().strip() == 'Caption A'
+    # Caption text should be flattened and not contain style/script
+    captext = figures[0].xpath('.//figcaption')[0].text_content().strip()
+    assert ' '.join(captext.split()) == 'Caption A Fancy'
 
 
 def test_html_video_sources_with_caption_html_output():
-    """Video with sources + poster + caption should render as <video> inside <figure>."""
+    """Video with sources + poster + nested caption renders as <video> inside <figure>, garbage stripped."""
     html_input = """
     <html><body><article>
       <figure>
@@ -1820,7 +1828,10 @@ def test_html_video_sources_with_caption_html_output():
           <source src="v.webm" type="video/webm">
           <source src="v.mp4" type="video/mp4">
         </video>
-        <figcaption>Caption V</figcaption>
+        <figcaption>
+           <span>Caption</span> <em>V</em>
+           <script>BAD()</script>
+        </figcaption>
       </figure>
     </article></body></html>
     """
@@ -1838,7 +1849,35 @@ def test_html_video_sources_with_caption_html_output():
     sources = video.xpath('./source')
     assert len(sources) == 2
     assert {s.get('src') for s in sources} == {'v.webm', 'v.mp4'}
+    assert '<script>' not in result
     assert figures[0].xpath('.//figcaption')[0].text_content().strip() == 'Caption V'
+
+
+def test_html_figure_caption_sanitization_complex():
+    """Figcaption with complex nested garbage should yield clean text-only caption."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <img src="x.png" alt="Alt"/>
+        <figcaption>
+            Before <span>Inside</span>
+            <link rel="stylesheet" href="/a.css"/>
+            <noscript>IGNORE</noscript>
+            <iframe src="about:blank">ignore</iframe>
+            <object>ignore</object>
+            <svg><text>svgtext</text></svg>
+            After
+        </figcaption>
+      </figure>
+    </article></body></html>
+    """
+    res = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert all(tag not in res for tag in ('<noscript', '<svg', '<object', '<iframe', '<link'))
+    doc = html.fromstring(res)
+    cap = doc.xpath('//figure/figcaption')[0].text_content().strip()
+    # All junk removed; only visible text remains
+    assert 'IGNORE' not in cap and 'svgtext' not in cap
+    assert 'Before Inside After' == ' '.join(cap.split())
 
 
 def test_paragraph_splitting_for_figure():
