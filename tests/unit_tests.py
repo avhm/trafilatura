@@ -1851,6 +1851,8 @@ def test_html_video_sources_with_caption_html_output():
     assert {s.get('src') for s in sources} == {'v.webm', 'v.mp4'}
     assert '<script>' not in result
     assert figures[0].xpath('.//figcaption')[0].text_content().strip() == 'Caption V'
+    # ensure proper closing tag is used
+    assert '</video>' in result
 
 
 def test_html_figure_caption_sanitization_complex():
@@ -1878,6 +1880,49 @@ def test_html_figure_caption_sanitization_complex():
     # All junk removed; only visible text remains
     assert 'IGNORE' not in cap and 'svgtext' not in cap
     assert 'Before Inside After' == ' '.join(cap.split())
+
+
+def test_html_figcaption_with_noise():
+    """Figcaption text starting with CSS-like garbage is cleaned."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <img src="a.jpg" alt="Alt"/>
+        <figcaption>
+          <style>.css-1st60ou{font-family:sans-serif;} .e15o9k8g0+.css-1st60ou{margin-left:0.25rem;}</style>
+          <span>Photograph: Reuters</span>
+        </figcaption>
+      </figure>
+    </article></body></html>
+    """
+    res = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(res)
+    cap = doc.xpath('//figure/figcaption')[0].text_content().strip()
+    assert 'Photograph: Reuters' == ' '.join(cap.split())
+
+
+def test_audio_not_self_closed_does_not_swallow_content():
+    """An <audio> wrapper should not swallow following content in either mode."""
+    html_input = """
+    <html><body><article>
+      <audio src="a.mp3">
+        <p>Intro inside</p>
+      </audio>
+      <p>After audio</p>
+    </article></body></html>
+    """
+    # With media disabled: audio tag should be stripped, fallback content removed, following content preserved
+    res_no_media = extract(html_input, output_format="html", include_images=False, config=ZERO_CONFIG)
+    assert '<audio' not in res_no_media
+    assert 'After audio' in res_no_media
+    assert 'Intro inside' not in res_no_media
+    # With media enabled: audio should be present and not swallow 'After audio'
+    res_media = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert '<audio' in res_media
+    assert 'After audio' in res_media
+    assert 'Intro inside' not in res_media
+    # ensure proper closing tag is used
+    assert '</audio>' in res_media
 
 
 def test_paragraph_splitting_for_figure():

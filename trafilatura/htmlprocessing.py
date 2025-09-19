@@ -47,6 +47,8 @@ PRESERVE_IMG_CLEANING = {"figure", "picture", "source", "audio", "video", "track
 
 CODE_INDICATORS = ["{", "(\"", "('", "\n    "]
 
+# Remove CSS-like garbage sequences at the beginning of captions
+
 
 def tree_cleaning(tree: HtmlElement, options: Extractor) -> HtmlElement:
     "Prune the tree by discarding unwanted elements."
@@ -620,6 +622,9 @@ def convert_to_html(tree: _Element) -> _Element:
                 if s.get("media"):
                     sattrs["media"] = s["media"]
                 SubElement(media_el, "source", **sattrs)
+            # ensure non-selfclosing tags in XML serialization
+            if len(media_el) == 0:
+                media_el.text = ""
             replacement = wrap_in_figure(media_el)
 
         # replace in tree
