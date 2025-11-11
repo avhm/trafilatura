@@ -1932,7 +1932,7 @@ def test_inline_svg_preserved_when_images_requested():
         include_images=True,
         config=ZERO_CONFIG,
     )
-    assert 'data:image/svg+xml;base64' in html_output
+    assert '<svg' in html_output
     assert 'width="600"' in html_output and 'height="200"' in html_output
     assert 'Inline SVG diagram' in html_output
 

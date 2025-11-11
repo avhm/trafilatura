@@ -11,7 +11,15 @@ from copy import deepcopy
 from typing import List, Optional, Tuple
 
 from courlan.urlutils import fix_relative_urls, get_base_url
-from lxml.etree import _Element, Element, SubElement, XPath, strip_tags, tostring
+from lxml.etree import (
+    _Element,
+    Element,
+    SubElement,
+    XPath,
+    strip_tags,
+    tostring,
+    fromstring,
+)
 from lxml.html import HtmlElement
 import json
 
@@ -709,15 +717,17 @@ def convert_to_html(tree: _Element) -> _Element:
             inline_data = g.get("data-inline-svg")
             if not inline_data:
                 continue
-            img = Element("img")
-            img.set("src", f"data:image/svg+xml;base64,{inline_data}")
-            if g.get("width"):
-                img.set("width", g.get("width", ""))
-            if g.get("height"):
-                img.set("height", g.get("height", ""))
-            if g.get("alt"):
-                img.set("alt", g.get("alt", ""))
-            replacement = wrap_in_figure(img)
+            try:
+                svg_elem = fromstring(base64.b64decode(inline_data))
+            except Exception:
+                continue
+            if g.get("width") and not svg_elem.get("width"):
+                svg_elem.set("width", g.get("width", ""))
+            if g.get("height") and not svg_elem.get("height"):
+                svg_elem.set("height", g.get("height", ""))
+            if g.get("alt") and not svg_elem.get("aria-label"):
+                svg_elem.set("aria-label", g.get("alt", ""))
+            replacement = wrap_in_figure(svg_elem)
         else:
             tagname = "video" if dtype == "video" else "audio"
             media_el = Element(tagname)
