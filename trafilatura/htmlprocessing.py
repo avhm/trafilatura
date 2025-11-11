@@ -3,7 +3,9 @@
 Functions to process nodes in HTML code.
 """
 
+import base64
 import logging
+import re
 
 from copy import deepcopy
 from typing import List, Optional, Tuple
@@ -43,9 +45,98 @@ REND_TAG_MAPPING = {
 
 HTML_TAG_MAPPING = {v: k for k, v in REND_TAG_MAPPING.items()}
 
-PRESERVE_IMG_CLEANING = {"figure", "picture", "source", "audio", "video", "track"}
+PRESERVE_IMG_CLEANING = {"figure", "picture", "source", "audio", "video", "track", "svg"}
 
 CODE_INDICATORS = ["{", "(\"", "('", "\n    "]
+
+SVG_NS_HREF = "{http://www.w3.org/1999/xlink}href"
+
+
+def _sanitize_svg_length(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    match = re.match(r"\s*([0-9]*\.?[0-9]+)", value)
+    if not match:
+        return None
+    number = match.group(1)
+    if "." in number:
+        number = number.rstrip("0").rstrip(".")
+    return number
+
+
+def _extract_svg_dimensions(svg_elem: Element) -> Tuple[Optional[str], Optional[str]]:
+    width = _sanitize_svg_length(svg_elem.get("width"))
+    height = _sanitize_svg_length(svg_elem.get("height"))
+    if width and height:
+        return width, height
+    viewbox = svg_elem.get("viewBox") or svg_elem.get("viewbox")
+    if viewbox:
+        parts = viewbox.replace(",", " ").split()
+        if len(parts) == 4:
+            w_candidate = _sanitize_svg_length(parts[2])
+            h_candidate = _sanitize_svg_length(parts[3])
+            width = width or w_candidate
+            height = height or h_candidate
+    return width, height
+
+
+def _absolutize_svg_links(svg_elem: Element, base_url: Optional[str]) -> None:
+    if not base_url:
+        return
+    for node in svg_elem.iter():
+        for attr, value in list(node.attrib.items()):
+            if not value:
+                continue
+            attr_lower = attr.lower()
+            if (
+                attr_lower.endswith("href")
+                or attr_lower in ("src", "xlink:href")
+                or attr == SVG_NS_HREF
+            ):
+                if value.startswith(("http://", "https://", "data:", "#", "url(")):
+                    continue
+                node.set(attr, fix_relative_urls(base_url, value))
+
+
+def _clean_svg_element(svg_elem: Element, base_url: Optional[str]) -> Element:
+    svg_copy = deepcopy(svg_elem)
+    for junk in svg_copy.xpath(
+        ".//script|.//iframe|.//foreignObject|.//object"
+    ):
+        delete_element(junk, keep_tail=False)
+    _absolutize_svg_links(svg_copy, base_url)
+    return svg_copy
+
+
+def _serialize_svg(svg_elem: Element, base_url: Optional[str]) -> Optional[str]:
+    cleaned = _clean_svg_element(svg_elem, base_url)
+    markup = tostring(cleaned, encoding="unicode")
+    if not markup:
+        return None
+    encoded = base64.b64encode(markup.encode("utf-8")).decode("ascii")
+    return encoded
+
+
+def _build_svg_graphic(
+    svg_elem: Element, base_url: Optional[str], caption: str = ""
+) -> Optional[Element]:
+    inline = _serialize_svg(svg_elem, base_url)
+    if not inline:
+        return None
+    graphic = Element("graphic")
+    graphic.set("data-type", "svg")
+    graphic.set("data-inline-svg", inline)
+    width, height = _extract_svg_dimensions(svg_elem)
+    if width:
+        graphic.set("width", width)
+    if height:
+        graphic.set("height", height)
+    label = svg_elem.get("aria-label") or svg_elem.get("title")
+    if label:
+        graphic.set("alt", label)
+    if caption:
+        graphic.set("caption", caption)
+    return graphic
 
 # Remove CSS-like garbage sequences at the beginning of captions
 
@@ -437,8 +528,8 @@ def convert_tags(
             if caption_el is not None and caption_el.getparent() is not None:
                 caption_el.getparent().remove(caption_el)
 
-            # prefer <img>, then <picture><img>, then <video>, then <audio>
-            media_nodes = fig.xpath('.//img | .//picture/img | .//video | .//audio')
+            # prefer <img>, then <picture><img>, then <video>, then <audio>, then inline <svg>
+            media_nodes = fig.xpath('.//img | .//picture/img | .//video | .//audio | .//svg')
             media = media_nodes[0] if media_nodes else None
             if media is None:
                 continue
@@ -456,6 +547,12 @@ def convert_tags(
                     g.set("alt", media.get("alt", ""))
                 if media.get("title"):
                     g.set("title", media.get("title", ""))
+            elif media.tag == "svg":
+                svg_graphic = _build_svg_graphic(media, base_url, caption)
+                if svg_graphic is None:
+                    continue
+                for attr, value in svg_graphic.attrib.items():
+                    g.set(attr, value)
             else:
                 # video or audio
                 g.set("data-type", "video" if media.tag == "video" else "audio")
@@ -493,7 +590,7 @@ def convert_tags(
                     if media.get(attr) is not None:
                         g.set(attr, media.get(attr) or "")
 
-            if caption:
+            if caption and media.tag != "svg":
                 g.set("caption", caption)
             # replace figure element in place with <graphic>
             fig.tag = "graphic"
@@ -551,6 +648,21 @@ def convert_tags(
         for elem in tree.iter("img"):
             elem.tag = "graphic"
 
+        # 4) Inline SVG without figures
+        for svg in list(tree.xpath(".//svg")):
+            parent = svg.getparent()
+            if parent is None:
+                continue
+            if parent.tag == "graphic":
+                continue
+            graphic_svg = _build_svg_graphic(svg, base_url)
+            if graphic_svg is None:
+                continue
+            idx = parent.index(svg)
+            graphic_svg.tail = svg.tail
+            parent.remove(svg)
+            parent.insert(idx, graphic_svg)
+
     return tree
 
 
@@ -592,6 +704,19 @@ def convert_to_html(tree: _Element) -> _Element:
                 img.set("alt", g.get("alt", ""))
             if g.get("title"):
                 img.set("title", g.get("title", ""))
+            replacement = wrap_in_figure(img)
+        elif dtype == "svg":
+            inline_data = g.get("data-inline-svg")
+            if not inline_data:
+                continue
+            img = Element("img")
+            img.set("src", f"data:image/svg+xml;base64,{inline_data}")
+            if g.get("width"):
+                img.set("width", g.get("width", ""))
+            if g.get("height"):
+                img.set("height", g.get("height", ""))
+            if g.get("alt"):
+                img.set("alt", g.get("alt", ""))
             replacement = wrap_in_figure(img)
         else:
             tagname = "video" if dtype == "video" else "audio"

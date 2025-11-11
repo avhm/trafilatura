@@ -1905,6 +1905,38 @@ def test_html_figcaption_with_noise():
     assert 'css-1st60ou' not in res and 'margin-left:0.25rem' not in res and 'BAD(' not in res
 
 
+def test_inline_svg_preserved_when_images_requested():
+    html_input = """
+    <html><body><article>
+      <figure>
+        <svg viewBox="0 0 600 200" width="600" height="200" aria-label="Timeline">
+          <rect width="600" height="200" fill="#eee"></rect>
+          <text x="300" y="120" text-anchor="middle" fill="#222">Sample SVG</text>
+        </svg>
+        <figcaption>Inline SVG diagram</figcaption>
+      </figure>
+    </article></body></html>
+    """
+    xml_output = extract(
+        html_input,
+        output_format="xml",
+        include_images=True,
+        config=ZERO_CONFIG,
+    )
+    assert '<graphic data-type="svg"' in xml_output
+    assert 'data-inline-svg' in xml_output
+
+    html_output = extract(
+        html_input,
+        output_format="html",
+        include_images=True,
+        config=ZERO_CONFIG,
+    )
+    assert 'data:image/svg+xml;base64' in html_output
+    assert 'width="600"' in html_output and 'height="200"' in html_output
+    assert 'Inline SVG diagram' in html_output
+
+
 def test_audio_not_self_closed_does_not_swallow_content():
     """An <audio> wrapper should not swallow following content in either mode."""
     html_input = """

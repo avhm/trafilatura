@@ -495,6 +495,16 @@ def handle_image(element: Optional[_Element], options: Optional[Extractor] = Non
             else:
                 link = re.sub(r"^//", "http://", link)
             processed_element.set("src", link)
+    elif dtype == "svg":
+        inline_data = element.get("data-inline-svg")
+        if not inline_data:
+            return None
+        processed_element.set("data-type", "svg")
+        processed_element.set("data-inline-svg", inline_data)
+        processed_element.set("src", f"data:image/svg+xml;base64,{inline_data}")
+        for attr in ("width", "height", "caption", "alt", "title"):
+            if element.get(attr):
+                processed_element.set(attr, element.get(attr, ""))
     else:
         # Audio/Video: keep known attributes without enforcing image file suffix
         for k, v in element.attrib.items():
