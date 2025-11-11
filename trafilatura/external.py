@@ -27,6 +27,7 @@ LOGGER = logging.getLogger(__name__)
 JT_STOPLIST = None
 
 SANITIZED_XPATH = './/aside|.//audio|.//button|.//fieldset|.//figure|.//footer|.//iframe|.//input|.//label|.//link|.//nav|.//noindex|.//noscript|.//object|.//option|.//select|.//source|.//svg|.//time'
+MEDIA_TAGS = {"audio", "video", "figure", "source", "track", "picture"}
 
 
 def try_readability(htmlinput: HtmlElement) -> HtmlElement:
@@ -92,7 +93,12 @@ def compare_extraction(tree: HtmlElement, backup_tree: HtmlElement, body: _Eleme
         LOGGER.debug('using custom extraction: %s', options.source)
 
     # override faulty extraction: try with justext
-    if body.xpath(SANITIZED_XPATH) or len_text < options.min_extracted_size:  # body.find(...)
+    # Consider document 'unclean' based on presence of boilerplate elements
+    unclean_nodes = list(body.xpath(SANITIZED_XPATH))
+    if getattr(options, "images", False):
+        # Ignore media-related tags when images/media are requested
+        unclean_nodes = [n for n in unclean_nodes if n.tag not in MEDIA_TAGS]
+    if unclean_nodes or len_text < options.min_extracted_size:  # body.find(...)
         LOGGER.debug('unclean document triggering justext examination: %s', options.source)
         body2, text2, len_text2 = justext_rescue(tree, options)
         jt_result = bool(text2)

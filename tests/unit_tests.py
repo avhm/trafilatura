@@ -1793,6 +1793,183 @@ def test_html_conversion():
     assert result == excepted_html
 
 
+def test_html_figure_image_with_caption_html_output():
+    """Image figure with nested figcaption content preserves only textual caption and strips garbage."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <img src="a.jpg" alt="Alt">
+        <figcaption>
+          <span>Caption</span> <strong>A</strong>
+          <style>.x{color:red}</style>
+          <a href="#">Fancy</a>
+        </figcaption>
+        <div class="share"><a>share</a></div>
+      </figure>
+    </article></body></html>
+    """
+    result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert 'color:red' not in result and '<style' not in result
+    doc = html.fromstring(result)
+    figures = doc.xpath('//figure')
+    assert len(figures) == 1
+    assert figures[0].xpath('.//img[@src="a.jpg"]')
+    # Caption text should be flattened and not contain style/script
+    captext = figures[0].xpath('.//figcaption')[0].text_content().strip()
+    assert ' '.join(captext.split()) == 'Caption A Fancy'
+
+
+def test_html_video_sources_with_caption_html_output():
+    """Video with sources + poster + nested caption renders as <video> inside <figure>, garbage stripped."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <video poster="p.jpg" controls>
+          <source src="v.webm" type="video/webm">
+          <source src="v.mp4" type="video/mp4">
+        </video>
+        <figcaption>
+           <span>Caption</span> <em>V</em>
+           <script>BAD()</script>
+        </figcaption>
+      </figure>
+    </article></body></html>
+    """
+    result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(result)
+    figures = doc.xpath('//figure')
+    assert len(figures) == 1
+    video = figures[0].xpath('.//video')
+    assert video, "<video> not found"
+    video = video[0]
+    # poster attribute present
+    assert video.get('poster') == 'p.jpg'
+    # controls attribute present (boolean in HTML)
+    assert 'controls' in video.attrib
+    sources = video.xpath('./source')
+    assert len(sources) == 2
+    assert {s.get('src') for s in sources} == {'v.webm', 'v.mp4'}
+    assert '<script>' not in result
+    assert figures[0].xpath('.//figcaption')[0].text_content().strip() == 'Caption V'
+    # ensure proper closing tag is used
+    assert '</video>' in result
+
+
+def test_html_figure_caption_sanitization_complex():
+    """Figcaption with complex nested garbage should yield clean text-only caption."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <img src="x.png" alt="Alt"/>
+        <figcaption>
+            Before <span>Inside</span>
+            <link rel="stylesheet" href="/a.css"/>
+            <noscript>IGNORE</noscript>
+            <iframe src="about:blank">ignore</iframe>
+            <object>ignore</object>
+            <svg><text>svgtext</text></svg>
+            After
+        </figcaption>
+      </figure>
+    </article></body></html>
+    """
+    res = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert all(tag not in res for tag in ('<noscript', '<svg', '<object', '<iframe', '<link'))
+    doc = html.fromstring(res)
+    cap = doc.xpath('//figure/figcaption')[0].text_content().strip()
+    # All junk removed; only visible text remains
+    assert 'IGNORE' not in cap and 'svgtext' not in cap
+    assert 'Before Inside After' == ' '.join(cap.split())
+
+
+def test_html_figcaption_with_noise():
+    """Figcaption text starting with CSS-like garbage is cleaned."""
+    html_input = """
+    <html><body><article>
+      <figure>
+        <img src="a.jpg" alt="Alt"/>
+        <figcaption>
+          <style>.css-1st60ou{font-family:sans-serif;} .e15o9k8g0+.css-1st60ou{margin-left:0.25rem;}</style>
+          <script>BAD()</script>
+          <span>Photograph: Reuters</span>
+        </figcaption>
+      </figure>
+    </article></body></html>
+    """
+    res = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(res)
+    cap = doc.xpath('//figure/figcaption')[0].text_content().strip()
+    # Caption must only contain visible text; no style/script contents
+    assert 'Photograph: Reuters' == ' '.join(cap.split())
+    assert 'css-1st60ou' not in cap and 'margin-left:0.25rem' not in cap and 'BAD(' not in cap
+    assert 'css-1st60ou' not in res and 'margin-left:0.25rem' not in res and 'BAD(' not in res
+
+
+def test_audio_not_self_closed_does_not_swallow_content():
+    """An <audio> wrapper should not swallow following content in either mode."""
+    html_input = """
+    <html><body><article>
+      <audio src="a.mp3">
+        <p>Intro inside</p>
+      </audio>
+      <p>After audio</p>
+    </article></body></html>
+    """
+    # With media disabled: audio tag should be stripped, fallback content removed, following content preserved
+    res_no_media = extract(html_input, output_format="html", include_images=False, config=ZERO_CONFIG)
+    assert '<audio' not in res_no_media
+    assert 'After audio' in res_no_media
+    assert 'Intro inside' not in res_no_media
+    # With media enabled: audio should be present and not swallow 'After audio'
+    res_media = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert '<audio' in res_media
+    assert 'After audio' in res_media
+    assert 'Intro inside' not in res_media
+    # ensure proper closing tag is used
+    assert '</audio>' in res_media
+
+
+def test_paragraph_splitting_for_figure():
+    """A <figure> inside a paragraph should result in two <p> blocks around it in HTML output."""
+    html_input = """
+    <html><body><article>
+      <p>Text before <figure><img src="a.jpg"/><figcaption>Cap</figcaption></figure> text after.</p>
+    </article></body></html>
+    """
+    result = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    doc = html.fromstring(result)
+    # should have two paragraphs and one figure at the same level
+    body_children = doc.xpath('//body/*')
+    # The structure should be p, figure, p
+    tags = [el.tag for el in body_children]
+    assert tags.count('figure') == 1
+    assert tags.count('p') >= 2
+    # Verify text content around figure
+    # Collapse whitespace for comparison
+    texts = [el.text_content().strip() for el in body_children if el.tag in ('p', 'figure')]
+    assert any('Text before' in t for t in texts)
+    assert any('text after.' in t for t in texts)
+
+
+def test_audio_preserved_when_include_images():
+    """Standalone <audio> with sources should be preserved when include_images=True and dropped otherwise."""
+    html_input = """
+    <html><body><article>
+      <p>Intro</p>
+      <audio controls>
+        <source src="a.mp3" type="audio/mpeg">
+      </audio>
+      <p>Outro</p>
+    </article></body></html>
+    """
+    # Without images/media, audio likely dropped
+    result_no_media = extract(html_input, output_format="html", include_images=False, config=ZERO_CONFIG)
+    assert '<audio' not in result_no_media
+    # With images/media, audio preserved
+    result_media = extract(html_input, output_format="html", include_images=True, config=ZERO_CONFIG)
+    assert '<audio' in result_media
+
+
 def test_deprecations():
     "Test deprecated function parameters."
     htmlstring = "<html><body><article>ABC</article></body></html>"
@@ -1833,3 +2010,11 @@ if __name__ == '__main__':
     test_lang_detection()
     test_is_probably_readerable()
     test_html_conversion()
+    # Media and figure/figcaption tests
+    test_html_figure_image_with_caption_html_output()
+    test_html_video_sources_with_caption_html_output()
+    test_html_figure_caption_sanitization_complex()
+    test_html_figcaption_with_noise()
+    test_audio_not_self_closed_does_not_swallow_content()
+    test_paragraph_splitting_for_figure()
+    test_audio_preserved_when_include_images()

@@ -454,42 +454,78 @@ def handle_table(table_elem: _Element, potential_tags: Set[str], options: Extrac
 
 
 def handle_image(element: Optional[_Element], options: Optional[Extractor] = None) -> Optional[_Element]:
-    "Process image elements and their relevant attributes."
+    "Process media elements (<graphic>) including images and AV."
     if element is None:
         return None
 
+    dtype = element.get("data-type") or "image"
     processed_element = Element(element.tag)
 
-    for attr in ("data-src", "src"):
-        src = element.get(attr, "")
-        if is_image_file(src):
-            processed_element.set("src", src)
-            break
-    else:
-        # take the first corresponding attribute
-        for attr, value in element.attrib.items():
-            if attr.startswith("data-src") and is_image_file(value):
-                processed_element.set("src", value)
+    if dtype == "image":
+        # locate image source
+        for attr in ("data-src", "src"):
+            src = element.get(attr, "")
+            if is_image_file(src):
+                processed_element.set("src", src)
                 break
-
-    # additional data
-    if alt_attr := element.get("alt"):
-        processed_element.set("alt", alt_attr)
-    if title_attr := element.get("title"):
-        processed_element.set("title", title_attr)
-
-    # don't return empty elements or elements without source, just None
-    if not processed_element.attrib or not processed_element.get("src"):
-        return None
-
-    # post-processing: URLs
-    link = processed_element.get("src", "")
-    if not link.startswith("http"):
-        if options is not None and options.url is not None:
-            link = urljoin(options.url, link)
         else:
-            link = re.sub(r"^//", "http://", link)
-        processed_element.set("src", link)
+            # take the first corresponding attribute
+            for attr, value in element.attrib.items():
+                if attr.startswith("data-src") and is_image_file(value):
+                    processed_element.set("src", value)
+                    break
+
+        # additional data
+        if alt_attr := element.get("alt"):
+            processed_element.set("alt", alt_attr)
+        if title_attr := element.get("title"):
+            processed_element.set("title", title_attr)
+        if cap_attr := element.get("caption"):
+            processed_element.set("caption", cap_attr)
+
+        # don't return empty elements or elements without source
+        if not processed_element.attrib or not processed_element.get("src"):
+            return None
+
+        # post-processing: URLs
+        link = processed_element.get("src", "")
+        if not link.startswith("http"):
+            if options is not None and options.url is not None:
+                link = urljoin(options.url, link)
+            else:
+                link = re.sub(r"^//", "http://", link)
+            processed_element.set("src", link)
+    else:
+        # Audio/Video: keep known attributes without enforcing image file suffix
+        for k, v in element.attrib.items():
+            if k in (
+                "src",
+                "data-sources",
+                "caption",
+                "poster",
+                "controls",
+                "autoplay",
+                "muted",
+                "loop",
+                "preload",
+                "playsinline",
+                "crossorigin",
+                "data-type",
+                "title",
+                "alt",
+            ):
+                processed_element.set(k, v)
+        # accept if we have a source or a list of sources
+        if not (processed_element.get("src") or processed_element.get("data-sources")):
+            return None
+        # normalize src if present
+        link = processed_element.get("src", "")
+        if link and not link.startswith("http"):
+            if options is not None and options.url is not None:
+                link = urljoin(options.url, link)
+            else:
+                link = re.sub(r"^//", "http://", link)
+            processed_element.set("src", link)
 
     processed_element.tail = element.tail
     return processed_element
