@@ -11,6 +11,7 @@ from copy import deepcopy
 from typing import List, Optional, Tuple
 
 from courlan.urlutils import fix_relative_urls, get_base_url
+from lxml import html as lxml_html
 from lxml.etree import (
     _Element,
     Element,
@@ -148,7 +149,7 @@ def _build_svg_graphic(
 
 
 def _build_katex_graphic(node: Element, display: str) -> Optional[Element]:
-    markup = tostring(node, encoding="unicode")
+    markup = tostring(node, encoding="unicode", with_tail=False)
     if not markup:
         return None
     encoded = base64.b64encode(markup.encode("utf-8")).decode("ascii")
@@ -792,10 +793,19 @@ def convert_to_html(tree: _Element) -> _Element:
                 continue
             try:
                 decoded = base64.b64decode(raw_html).decode("utf-8")
-                katex_node = fromstring(decoded)
+                fragment = lxml_html.fragment_fromstring(decoded, create_parent=True)
             except Exception:
                 continue
-            replacement = katex_node
+            nodes = list(fragment)
+            if not nodes:
+                continue
+            if len(nodes) == 1:
+                replacement = nodes[0]
+            else:
+                wrapper = Element("span")
+                for child in nodes:
+                    wrapper.append(child)
+                replacement = wrapper
         else:
             tagname = "video" if dtype == "video" else "audio"
             media_el = Element(tagname)
