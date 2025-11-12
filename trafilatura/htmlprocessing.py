@@ -146,6 +146,18 @@ def _build_svg_graphic(
         graphic.set("caption", caption)
     return graphic
 
+
+def _build_katex_graphic(node: Element, display: str) -> Optional[Element]:
+    markup = tostring(node, encoding="unicode")
+    if not markup:
+        return None
+    encoded = base64.b64encode(markup.encode("utf-8")).decode("ascii")
+    graphic = Element("graphic")
+    graphic.set("data-type", "katex")
+    graphic.set("data-inline-html", encoded)
+    graphic.set("data-display", display)
+    return graphic
+
 # Remove CSS-like garbage sequences at the beginning of captions
 
 
@@ -318,6 +330,22 @@ def delete_by_link_density(
     return subtree
 
 
+def _has_math_markup(elem: _Element) -> bool:
+    """Return True if the node (or any descendant) carries MathML/KaTeX markup."""
+    for node in elem.iter():
+        if node.tag == "math":
+            return True
+        class_attr = node.get("class")
+        if class_attr:
+            if isinstance(class_attr, (list, tuple)):
+                classes = " ".join(map(str, class_attr))
+            else:
+                classes = str(class_attr)
+            if "katex" in classes:
+                return True
+    return False
+
+
 def handle_textnode(
     elem: _Element,
     options: Extractor,
@@ -326,8 +354,8 @@ def handle_textnode(
 ) -> Optional[_Element]:
     "Convert, format, and probe potential text elements."
     if elem.tag == "graphic":
-        # pass through if it's a valid image or declared AV media
-        if is_image_element(elem) or elem.get("data-type") in ("video", "audio"):
+        # pass through if it's a valid image, KaTeX placeholder, or declared AV media
+        if is_image_element(elem) or elem.get("data-type") in ("video", "audio", "katex"):
             return elem
     if elem.tag == "done" or (len(elem) == 0 and not elem.text and not elem.tail):
         return None
@@ -357,11 +385,10 @@ def handle_textnode(
 
     # filter content
     # or not re.search(r'\w', element.text):  # text_content()?
-    if (
-        not elem.text
-        and textfilter(elem)
-        or (options.dedup and duplicate_test(elem, options))
-    ):
+    has_math = _has_math_markup(elem)
+    if not has_math and not elem.text and textfilter(elem):
+        return None
+    if options.dedup and duplicate_test(elem, options):
         return None
     return elem
 
@@ -671,7 +698,38 @@ def convert_tags(
             parent.remove(svg)
             parent.insert(idx, graphic_svg)
 
+    _replace_katex_with_graphics(tree)
     return tree
+
+
+def _replace_katex_with_graphics(tree: HtmlElement) -> None:
+    """Capture KaTeX markup as <graphic data-type="katex"> placeholders."""
+    xpath_display = "//*[contains(concat(' ', normalize-space(@class), ' '), ' katex-display ')]"
+    for node in list(tree.xpath(xpath_display)):
+        _replace_node_with_graphic(node, "block")
+    xpath_inline = (
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' katex ')"
+        " and not(contains(concat(' ', normalize-space(@class), ' '), ' katex-display '))]"
+    )
+    for node in list(tree.xpath(xpath_inline)):
+        classes = node.get("class", "")
+        if any(token in classes for token in ("katex-mathml", "katex-html")):
+            continue
+        _replace_node_with_graphic(node, "inline")
+
+
+def _replace_node_with_graphic(node: Element, display: str) -> None:
+    graphic = _build_katex_graphic(node, display)
+    if graphic is None:
+        return
+    parent = node.getparent()
+    if parent is None:
+        return
+    idx = parent.index(node)
+    graphic.tail = node.tail
+    node.tail = None
+    parent.remove(node)
+    parent.insert(idx, graphic)
 
 
 HTML_CONVERSIONS = {
@@ -728,6 +786,16 @@ def convert_to_html(tree: _Element) -> _Element:
             if g.get("alt") and not svg_elem.get("aria-label"):
                 svg_elem.set("aria-label", g.get("alt", ""))
             replacement = wrap_in_figure(svg_elem)
+        elif dtype == "katex":
+            raw_html = g.get("data-inline-html")
+            if not raw_html:
+                continue
+            try:
+                decoded = base64.b64decode(raw_html).decode("utf-8")
+                katex_node = fromstring(decoded)
+            except Exception:
+                continue
+            replacement = katex_node
         else:
             tagname = "video" if dtype == "video" else "audio"
             media_el = Element(tagname)

@@ -16,7 +16,7 @@ from lxml.html import HtmlElement
 # own
 from .htmlprocessing import (delete_by_link_density, handle_textnode,
                              link_density_test_tables, process_node,
-                             prune_unwanted_nodes)
+                             prune_unwanted_nodes, _has_math_markup)
 from .settings import TAG_CATALOG, Extractor
 from .utils import FORMATTING_PROTECTED, copy_attributes, is_image_file, text_chars_test, trim
 from .xml import delete_element
@@ -154,11 +154,16 @@ def is_text_element(elem: _Element) -> bool:
 
 def define_newelem(processed_elem: _Element, orig_elem: _Element) -> None:
     "Create a new sub-element if necessary."
-    if processed_elem is not None:
-        childelem = SubElement(orig_elem, processed_elem.tag)
-        childelem.text, childelem.tail = processed_elem.text, processed_elem.tail
-        if processed_elem.tag == 'graphic':
-            copy_attributes(childelem, processed_elem)
+    if processed_elem is None:
+        return
+    if _has_math_markup(processed_elem):
+        new_child = deepcopy(processed_elem)
+        orig_elem.append(new_child)
+        return
+    childelem = SubElement(orig_elem, processed_elem.tag)
+    childelem.text, childelem.tail = processed_elem.text, processed_elem.tail
+    if processed_elem.tag == 'graphic':
+        copy_attributes(childelem, processed_elem)
 
 
 def handle_lists(element: _Element, options: Extractor) -> Optional[_Element]:
@@ -505,6 +510,14 @@ def handle_image(element: Optional[_Element], options: Optional[Extractor] = Non
         for attr in ("width", "height", "caption", "alt", "title"):
             if element.get(attr):
                 processed_element.set(attr, element.get(attr, ""))
+    elif dtype == "katex":
+        inline_html = element.get("data-inline-html")
+        if not inline_html:
+            return None
+        processed_element.set("data-type", "katex")
+        processed_element.set("data-inline-html", inline_html)
+        if display := element.get("data-display"):
+            processed_element.set("data-display", display)
     else:
         # Audio/Video: keep known attributes without enforcing image file suffix
         for k, v in element.attrib.items():
