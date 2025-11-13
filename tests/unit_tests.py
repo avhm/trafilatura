@@ -1900,6 +1900,21 @@ def test_inline_anchor_paragraph_merge():
     assert para.xpath('.//a')
 
 
+def test_inline_strong_retains_line_break():
+    """Line breaks inside bold/strong spans should survive as <br> nodes."""
+    html_input = """
+    <html><body><article>
+      <p><strong>“Hamnet”<br/></strong>This drama imagines how Shakespeare’s work might have been influenced.</p>
+    </article></body></html>
+    """
+    res = extract(html_input, output_format="html", include_formatting=True, config=ZERO_CONFIG)
+    doc = html.fromstring(res)
+    strong_nodes = doc.xpath('//p/strong')
+    assert strong_nodes, "Expected <strong> node in output"
+    strong_html = etree.tostring(strong_nodes[0], encoding="unicode")
+    assert "<br" in strong_html, "Expected <br> preserved inside <strong>"
+
+
 def test_html_figcaption_with_noise():
     """Figcaption text starting with CSS-like garbage is cleaned."""
     html_input = """

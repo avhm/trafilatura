@@ -360,9 +360,14 @@ def handle_paragraphs(element: _Element, potential_tags: Set[str], options: Extr
             # handle formatting
             newsub = Element(child.tag)
             if processed_child.tag in P_FORMATTING:
+                preserved_children = []
                 # check depth and clean
                 if len(processed_child) > 0:
-                    for item in processed_child:  # children are lists
+                    for item in list(processed_child):  # children are lists
+                        if item.tag == "lb":
+                            preserved_children.append(deepcopy(item))
+                            item.tag = "done"
+                            continue
                         if text_chars_test(item.text) is True:
                             item.text = " " + item.text  # type: ignore[operator]
                         strip_tags(processed_child, item.tag)
@@ -372,6 +377,9 @@ def handle_paragraphs(element: _Element, potential_tags: Set[str], options: Extr
                 elif child.tag == "ref":
                     if child.get("target") is not None:
                         newsub.set("target", child.get("target", ""))
+                if preserved_children:
+                    for preserved in preserved_children:
+                        newsub.append(preserved)
             # handle line breaks
             # elif processed_child.tag == 'lb':
             #    try:
