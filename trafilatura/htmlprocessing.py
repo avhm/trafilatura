@@ -148,13 +148,13 @@ def _build_svg_graphic(
     return graphic
 
 
-def _build_katex_graphic(node: Element, display: str) -> Optional[Element]:
+def _build_mathml_graphic(node: Element, display: str) -> Optional[Element]:
     markup = tostring(node, encoding="unicode", with_tail=False)
     if not markup:
         return None
     encoded = base64.b64encode(markup.encode("utf-8")).decode("ascii")
     graphic = Element("graphic")
-    graphic.set("data-type", "katex")
+    graphic.set("data-type", "mathml")
     graphic.set("data-inline-html", encoded)
     graphic.set("data-display", display)
     return graphic
@@ -356,7 +356,7 @@ def handle_textnode(
     "Convert, format, and probe potential text elements."
     if elem.tag == "graphic":
         # pass through if it's a valid image, KaTeX placeholder, or declared AV media
-        if is_image_element(elem) or elem.get("data-type") in ("video", "audio", "katex"):
+        if is_image_element(elem) or elem.get("data-type") in ("video", "audio", "mathml"):
             return elem
     if elem.tag == "done" or (len(elem) == 0 and not elem.text and not elem.tail):
         return None
@@ -699,28 +699,25 @@ def convert_tags(
             parent.remove(svg)
             parent.insert(idx, graphic_svg)
 
-    _replace_katex_with_graphics(tree)
+    _replace_mathml_with_graphics(tree)
     return tree
 
 
-def _replace_katex_with_graphics(tree: HtmlElement) -> None:
-    """Capture KaTeX markup as <graphic data-type="katex"> placeholders."""
-    xpath_display = "//*[contains(concat(' ', normalize-space(@class), ' '), ' katex-display ')]"
-    for node in list(tree.xpath(xpath_display)):
-        _replace_node_with_graphic(node, "block")
-    xpath_inline = (
-        "//*[contains(concat(' ', normalize-space(@class), ' '), ' katex ')"
-        " and not(contains(concat(' ', normalize-space(@class), ' '), ' katex-display '))]"
-    )
-    for node in list(tree.xpath(xpath_inline)):
-        classes = node.get("class", "")
-        if any(token in classes for token in ("katex-mathml", "katex-html")):
-            continue
-        _replace_node_with_graphic(node, "inline")
+def _replace_mathml_with_graphics(tree: HtmlElement) -> None:
+    """Capture MathML markup as <graphic data-type="mathml"> placeholders."""
+    xpath = ".//*[local-name()='math']"
+    for node in list(tree.xpath(xpath)):
+        display_attr = (node.get("display", "") or "").lower()
+        if not display_attr:
+            style_attr = (node.get("style", "") or "").replace(" ", "").lower()
+            if "display:block" in style_attr:
+                display_attr = "block"
+        inferred_display = "block" if display_attr == "block" else "inline"
+        _replace_node_with_graphic(node, inferred_display)
 
 
 def _replace_node_with_graphic(node: Element, display: str) -> None:
-    graphic = _build_katex_graphic(node, display)
+    graphic = _build_mathml_graphic(node, display)
     if graphic is None:
         return
     parent = node.getparent()
@@ -787,7 +784,7 @@ def convert_to_html(tree: _Element) -> _Element:
             if g.get("alt") and not svg_elem.get("aria-label"):
                 svg_elem.set("aria-label", g.get("alt", ""))
             replacement = wrap_in_figure(svg_elem)
-        elif dtype == "katex":
+        elif dtype in ("katex", "mathml"):
             raw_html = g.get("data-inline-html")
             if not raw_html:
                 continue

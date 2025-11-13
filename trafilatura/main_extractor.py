@@ -510,11 +510,11 @@ def handle_image(element: Optional[_Element], options: Optional[Extractor] = Non
         for attr in ("width", "height", "caption", "alt", "title"):
             if element.get(attr):
                 processed_element.set(attr, element.get(attr, ""))
-    elif dtype == "katex":
+    elif dtype in ("katex", "mathml"):
         inline_html = element.get("data-inline-html")
         if not inline_html:
             return None
-        processed_element.set("data-type", "katex")
+        processed_element.set("data-type", "mathml")
         processed_element.set("data-inline-html", inline_html)
         if display := element.get("data-display"):
             processed_element.set("data-display", display)
