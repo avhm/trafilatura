@@ -34,6 +34,8 @@ TABLE_ALL = {'td', 'th', 'hi'}
 FORMATTING = {'hi', 'ref', 'span'}
 CODES_QUOTES = {'code', 'quote'}
 NOT_AT_THE_END = {'head', 'ref'}
+INLINE_ONLY_TAGS = {'ref', 'hi', 'span', 'code', 'lb', 'del', 'em', 'strong', 'sub', 'sup', 'b', 'i'}
+SENTENCE_TERMINATORS = ('.', '!', '?', ';', '…', ')', '"', "'", ']', '}', '»', '”', '’')
 
 
 def _log_event(msg: str, tag: Any, text: Optional[Union[bytes, str]]) -> None:
@@ -115,6 +117,56 @@ def handle_formatting(element: _Element, options: Extractor) -> Optional[_Elemen
     else:
         processed_element = formatting
     return processed_element
+
+
+def _paragraph_has_only_inline(elem: _Element) -> bool:
+    for child in elem:
+        if child.tag not in INLINE_ONLY_TAGS:
+            return False
+    return len(elem) > 0
+
+
+def _paragraph_text(elem: _Element) -> str:
+    return ''.join(elem.itertext()).strip()
+
+
+def _needs_merge(prev: _Element, curr: _Element) -> bool:
+    if prev.tag != 'p' or curr.tag != 'p':
+        return False
+    if not _paragraph_has_only_inline(curr):
+        return False
+    if len(curr) == 0 or curr[0].tag != 'ref':
+        return False
+    prev_text = _paragraph_text(prev)
+    if not prev_text or prev_text.endswith(SENTENCE_TERMINATORS):
+        return False
+    curr_text = _paragraph_text(curr)
+    return bool(curr_text)
+
+
+def merge_inline_anchor_paragraphs(tree: HtmlElement) -> None:
+    for paragraph in list(tree.xpath(".//p")):
+        prev = paragraph.getprevious()
+        if prev is None:
+            continue
+        if not _needs_merge(prev, paragraph):
+            continue
+        if prev.tail:
+            prev.tail = prev.tail.rstrip()
+        if prev.text and not prev.text.endswith(' '):
+            prev.text += ' '
+        elif not prev.text:
+            prev.text = ''
+        prev.text = (prev.text or '') + (paragraph.text or '')
+        while len(paragraph):
+            child = paragraph[0]
+            paragraph.remove(child)
+            prev.append(child)
+        if paragraph.tail:
+            prev.tail = (prev.tail or '') + paragraph.tail
+        parent = paragraph.getparent()
+        if parent is not None:
+            parent.remove(paragraph)
 
 
 def add_sub_element(new_child_elem: _Element, subelem: _Element, processed_subchild: _Element) -> None:
@@ -683,7 +735,21 @@ def _extract(tree: HtmlElement, options: Extractor) -> Tuple[_Element, str, Set[
         if {e.tag for e in subelems} == {'lb'}:
             subelems = [subtree]
         # extract content
-        result_body.extend([el for el in (handle_textelem(e, potential_tags, options) for e in subelems) if el is not None])
+        processed_elements = []
+        for elem in subelems:
+            if elem.tag == "done":
+                continue
+            parent = elem.getparent()
+            if (
+                elem.tag in FORMATTING
+                and parent is not None
+                and parent.tag in FORMATTING_PROTECTED
+            ):
+                continue
+            handled = handle_textelem(elem, potential_tags, options)
+            if handled is not None:
+                processed_elements.append(handled)
+        result_body.extend(processed_elements)
         # remove trailing titles
         while len(result_body) > 0 and (result_body[-1].tag in NOT_AT_THE_END):
             delete_element(result_body[-1], keep_tail=False)

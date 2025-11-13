@@ -559,7 +559,7 @@ def convert_tags(
             if caption_el is not None:
                 # drop garbage elements inside caption (e.g., style/script)
                 for junk in caption_el.xpath('.//style|.//script|.//noscript|.//link|.//meta|.//iframe|.//object|.//svg'):
-                    delete_element(junk, keep_tail=False)
+                    delete_element(junk, keep_tail=True)
             caption = " ".join(caption_el.itertext()).strip() if caption_el is not None else ""
             if caption_el is not None and caption_el.getparent() is not None:
                 caption_el.getparent().remove(caption_el)

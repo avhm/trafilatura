@@ -1882,6 +1882,24 @@ def test_html_figure_caption_sanitization_complex():
     assert 'Before Inside After' == ' '.join(cap.split())
 
 
+def test_inline_anchor_paragraph_merge():
+    """Inline-only anchor paragraphs should be merged back into prior paragraph."""
+    html_input = """
+    <html><body><article>
+      <p>Intro sentence without a full stop leads right into a</p>
+      <p><a href="https://example.com/link">link</a>. This continuation should remain inline.</p>
+    </article></body></html>
+    """
+    res = extract(html_input, output_format="html", include_links=True, config=ZERO_CONFIG)
+    doc = html.fromstring(res)
+    paras = doc.xpath('//p')
+    assert len(paras) == 1
+    para = paras[0]
+    assert 'link' in para.text_content()
+    assert 'This continuation should remain inline.' in para.text_content()
+    assert para.xpath('.//a')
+
+
 def test_html_figcaption_with_noise():
     """Figcaption text starting with CSS-like garbage is cleaned."""
     html_input = """
