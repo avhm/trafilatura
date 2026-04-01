@@ -116,8 +116,6 @@ def test_fetch():
     # False doesn't work?
     url = 'https://expired.badssl.com/'
     assert _send_urllib_request(url, True, False, DEFAULT_CONFIG) is not None
-    if HAS_PYCURL:
-        assert _send_pycurl_request(url, False, False, DEFAULT_CONFIG) is not None
     # no SSL, no decoding
     url = 'https://httpbun.com/status/200'
     for no_ssl in (True, False):
@@ -161,6 +159,62 @@ def test_fetch():
 
     # reset global objects again to avoid affecting other tests
     _reset_downloads_global_objects()
+
+
+@pytest.mark.skipif(not HAS_PYCURL, reason="pycurl not installed")
+def test_pycurl_ssl_error_retries_without_verification():
+    """Pycurl downloads should retry once with SSL verification disabled on SSL errors."""
+    ssl_verify_peer = trafilatura.downloads.pycurl.SSL_VERIFYPEER
+    ssl_verify_host = trafilatura.downloads.pycurl.SSL_VERIFYHOST
+    response_code = trafilatura.downloads.pycurl.RESPONSE_CODE
+    effective_url = trafilatura.downloads.pycurl.EFFECTIVE_URL
+    first_ssl_error = trafilatura.downloads.pycurl.error(
+        60,
+        "SSL certificate problem: certificate has expired",
+    )
+
+    class FakeCurl:
+        calls = []
+        RESPONSE_CODE = response_code
+        EFFECTIVE_URL = effective_url
+
+        def __init__(self):
+            self.options = {}
+
+        def setopt(self, option, value):
+            self.options[option] = value
+
+        def perform_rb(self):
+            FakeCurl.calls.append(self.options.copy())
+            if len(FakeCurl.calls) == 1:
+                raise first_ssl_error
+            return b"ok"
+
+        def getinfo(self, info):
+            if info == response_code:
+                return 200
+            if info == effective_url:
+                return "https://expired.badssl.com/"
+            raise AssertionError(f"unexpected getinfo({info!r})")
+
+        def close(self):
+            return None
+
+    with patch.object(trafilatura.downloads.pycurl, "Curl", FakeCurl):
+        response = _send_pycurl_request(
+            "https://expired.badssl.com/",
+            False,
+            False,
+            DEFAULT_CONFIG,
+        )
+
+    assert response is not None
+    assert response.data == b"ok"
+    assert len(FakeCurl.calls) == 2
+    assert ssl_verify_peer not in FakeCurl.calls[0]
+    assert ssl_verify_host not in FakeCurl.calls[0]
+    assert FakeCurl.calls[1][ssl_verify_peer] == 0
+    assert FakeCurl.calls[1][ssl_verify_host] == 0
 
 
 IS_PROXY_TEST = os.environ.get("PROXY_TEST", "false") == "true"
